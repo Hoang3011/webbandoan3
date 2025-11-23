@@ -1,128 +1,186 @@
+
 <?php
 include "connect.php";
+$model = new ProductModel($conn);
 
-// Số sản phẩm trên mỗi trang
-$limit = 12;
+// Lấy dữ liệu từ URL
+$keyword    = $_GET['keyword'] ?? '';
+$category   = $_GET['category'] ?? '';
+$Type       = $_GET['Type'] ?? '';
+$min_price  = $_GET['min_price'] ?? '';
+$max_price  = $_GET['max_price'] ?? '';
+$sort       = $_GET['sort'] ?? '';
+$page       = $_GET['page'] ?? 1;
 
-// Trang hiện tại (mặc định là 1)
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-$page = max($page, 1);
+// Gom filter lại đúng format
+$filters = [
+    'keyword'   => $keyword,
+    'category'  => $category,
+    'Type'      => $Type,
+    'min_price' => $min_price,
+    'max_price' => $max_price,
+    'sort'      => $sort,
+];
 
-// Tính OFFSET
-$offset = ($page - 1) * $limit;
+// Lấy danh sách sản phẩm
+$result = $model->getProducts($filters, $page);
 
-// Lấy tham số tìm kiếm
-$keyword = isset($_GET['keyword']) ? trim($_GET['keyword']) : '';
-$category = isset($_GET['category']) ? trim($_GET['category']) : '';
-$min_price = isset($_GET['min_price']) && is_numeric($_GET['min_price']) ? (int)$_GET['min_price'] : '';
-$max_price = isset($_GET['max_price']) && is_numeric($_GET['max_price']) ? (int)$_GET['max_price'] : '';
-$sort = isset($_GET['sort']) ? $_GET['sort'] : '';
-$Type = isset($_GET['Type']) ? trim($_GET['Type']) : '';
+// Tổng số sản phẩm (phục vụ phân trang)
+$total_products = $model->getTotalProducts($filters);
+$total_pages    = $model->getTotalPages($filters);
 
-// Xây dựng truy vấn SQL
-$sql = "SELECT MA_SP, TEN_SP, GIA_CA, HINH_ANH, MA_LOAISP FROM sanpham WHERE TINH_TRANG = 1";
-$params = [];
-$types = "";
+// Check có phải chế độ tìm kiếm không
+$is_search = $model->isSearchMode($filters);
+class ProductModel {
+    
+    private $conn;
+    private $limit = 12; // số sản phẩm mỗi trang
 
-// Thêm điều kiện tìm kiếm theo từ khóa
-if (!empty($keyword)) {
-    $sql .= " AND TEN_SP LIKE ?";
-    $params[] = "%$keyword%";
-    $types .= "s";
+    public function __construct($db) {
+        $this->conn = $db;
+    }
+
+    /** 
+     * Lấy danh sách sản phẩm có phân trang + filter + sort
+     */
+    public function getProducts($filters = [], $page = 1) {
+        $page = max((int)$page, 1);
+        $offset = ($page - 1) * $this->limit;
+
+        $sql = "SELECT MA_SP, TEN_SP, GIA_CA, HINH_ANH, MA_LOAISP 
+                FROM sanpham 
+                WHERE TINH_TRANG = 1";
+
+        $params = [];
+        $types = "";
+
+        // Keyword
+        if (!empty($filters['keyword'])) {
+            $sql .= " AND TEN_SP LIKE ?";
+            $params[] = "%" . $filters['keyword'] . "%";
+            $types .= "s";
+        }
+
+        // Category / Type
+        if (!empty($filters['category'])) {
+            $sql .= " AND MA_LOAISP = ?";
+            $params[] = $filters['category'];
+            $types .= "s";
+        } elseif (!empty($filters['Type'])) {
+            $sql .= " AND MA_LOAISP = ?";
+            $params[] = $filters['Type'];
+            $types .= "s";
+        }
+
+        // Price filter
+        if (isset($filters['min_price']) && is_numeric($filters['min_price'])) {
+            $sql .= " AND GIA_CA >= ?";
+            $params[] = (int)$filters['min_price'];
+            $types .= "i";
+        }
+
+        if (isset($filters['max_price']) && is_numeric($filters['max_price'])) {
+            $sql .= " AND GIA_CA <= ?";
+            $params[] = (int)$filters['max_price'];
+            $types .= "i";
+        }
+
+        // Sorting
+        if (!empty($filters['sort'])) {
+            if ($filters['sort'] === 'asc') {
+                $sql .= " ORDER BY GIA_CA ASC";
+            } elseif ($filters['sort'] === 'desc') {
+                $sql .= " ORDER BY GIA_CA DESC";
+            }
+        }
+
+        // Pagination
+        $sql .= " LIMIT ? OFFSET ?";
+        $params[] = $this->limit;
+        $params[] = $offset;
+        $types .= "ii";
+
+        $stmt = $this->conn->prepare($sql);
+        if (!$stmt) {
+            die("Lỗi prepare: " . $this->conn->error);
+        }
+
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        return $result;
+    }
+
+
+    /**
+     * Lấy tổng số sản phẩm sau khi đã filter (để tính tổng số trang)
+     */
+    public function getTotalProducts($filters = []) {
+        $sql = "SELECT COUNT(*) AS total FROM sanpham WHERE TINH_TRANG = 1";
+
+        $params = [];
+        $types = "";
+
+        if (!empty($filters['keyword'])) {
+            $sql .= " AND TEN_SP LIKE ?";
+            $params[] = "%" . $filters['keyword'] . "%";
+            $types .= "s";
+        }
+
+        if (!empty($filters['category'])) {
+            $sql .= " AND MA_LOAISP = ?";
+            $params[] = $filters['category'];
+            $types .= "s";
+        } elseif (!empty($filters['Type'])) {
+            $sql .= " AND MA_LOAISP = ?";
+            $params[] = $filters['Type'];
+            $types .= "s";
+        }
+
+        if (isset($filters['min_price']) && is_numeric($filters['min_price'])) {
+            $sql .= " AND GIA_CA >= ?";
+            $params[] = (int)$filters['min_price'];
+            $types .= "i";
+        }
+
+        if (isset($filters['max_price']) && is_numeric($filters['max_price'])) {
+            $sql .= " AND GIA_CA <= ?";
+            $params[] = (int)$filters['max_price'];
+            $types .= "i";
+        }
+
+        $stmt = $this->conn->prepare($sql);
+        if (!$stmt) {
+            die("Lỗi prepare: " . $this->conn->error);
+        }
+
+        if (!empty($params))
+            $stmt->bind_param($types, ...$params);
+
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+
+        return $result['total'];
+    }
+
+
+    /** 
+     * Tính tổng số trang
+     */
+    public function getTotalPages($filters = []) {
+        $total = $this->getTotalProducts($filters);
+        return ($total > 0) ? ceil($total / $this->limit) : 1;
+    }
+
+    public function isSearchMode($filters = []) {
+        return !empty($filters['keyword']) || 
+               !empty($filters['category']) || 
+               !empty($filters['Type']) || 
+               isset($filters['min_price']) || 
+               isset($filters['max_price']);
+    }
 }
-
-// Thêm điều kiện tìm kiếm theo danh mục
-if (!empty($category)) {
-    $sql .= " AND MA_LOAISP = ?";
-    $params[] = $category;
-    $types .= "s";
-} elseif (!empty($Type)) {
-    $sql .= " AND MA_LOAISP = ?";
-    $params[] = $Type;
-    $types .= "s";
-}
-
-// Thêm điều kiện tìm kiếm theo giá
-if ($min_price !== '' && is_numeric($min_price)) {
-    $sql .= " AND GIA_CA >= ?";
-    $params[] = (int)$min_price;
-    $types .= "i";
-}
-if ($max_price !== '' && is_numeric($max_price)) {
-    $sql .= " AND GIA_CA <= ?";
-    $params[] = (int)$max_price;
-    $types .= "i";
-}
-
-// Thêm sắp xếp
-if ($sort === 'asc') {
-    $sql .= " ORDER BY GIA_CA ASC";
-} elseif ($sort === 'desc') {
-    $sql .= " ORDER BY GIA_CA DESC";
-}
-
-// Thêm phân trang
-$sql .= " LIMIT ? OFFSET ?";
-$params[] = $limit;
-$params[] = $offset;
-$types .= "ii";
-
-// Chuẩn bị và thực thi truy vấn
-$stmt = $conn->prepare($sql);
-if ($stmt === false) {
-    die("Lỗi prepare: " . $conn->error);
-}
-if (!empty($params)) {
-    $stmt->bind_param($types, ...$params);
-}
-$stmt->execute();
-$result = $stmt->get_result();
-
-// Lấy tổng số sản phẩm để tính tổng số trang
-$total_sql = "SELECT COUNT(*) as total FROM sanpham WHERE TINH_TRANG = 1";
-$total_params = [];
-$total_types = "";
-
-if (!empty($keyword)) {
-    $total_sql .= " AND TEN_SP LIKE ?";
-    $total_params[] = "%$keyword%";
-    $total_types .= "s";
-}
-if (!empty($category)) {
-    $total_sql .= " AND MA_LOAISP = ?";
-    $total_params[] = $category;
-    $total_types .= "s";
-} elseif (!empty($Type)) {
-    $total_sql .= " AND MA_LOAISP = ?";
-    $total_params[] = $Type;
-    $total_types .= "s";
-}
-if ($min_price !== '' && is_numeric($min_price)) {
-    $total_sql .= " AND GIA_CA >= ?";
-    $total_params[] = (int)$min_price;
-    $total_types .= "i";
-}
-if ($max_price !== '' && is_numeric($max_price)) {
-    $total_sql .= " AND GIA_CA <= ?";
-    $total_params[] = (int)$max_price;
-    $total_types .= "i";
-}
-
-$total_stmt = $conn->prepare($total_sql);
-if ($total_stmt === false) {
-    die("Lỗi prepare total: " . $conn->error);
-}
-if (!empty($total_params)) {
-    $total_stmt->bind_param($total_types, ...$total_params);
-}
-$total_stmt->execute();
-$total_result = $total_stmt->get_result();
-$total_row = $total_result->fetch_assoc();
-$total_products = $total_row['total'];
-$total_pages = ($total_products > 0) ? ceil($total_products / $limit) : 1;
-
-// Kiểm tra xem có phải là kết quả tìm kiếm không
-$is_search = !empty($keyword) || !empty($category) || !empty($Type) || $min_price !== '' || $max_price !== '';
 ?>
 
 <!DOCTYPE html>
